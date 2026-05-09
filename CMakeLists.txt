@@ -16,6 +16,8 @@ option(RPCPP_BUILD_MSGPACK  "Enable the msgpack codec (requires msgpack-c)" OFF)
 
 if(RPCPP_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(deps/catch2)
+    list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/deps/catch2/extras)
 endif()
 
 if(RPCPP_BUILD_MSGPACK)
