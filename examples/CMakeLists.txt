@@ -7,6 +7,9 @@ target_link_libraries(example_calculator PRIVATE rpcpp::rpcpp)
 add_executable(example_discovery discovery.cpp)
 target_link_libraries(example_discovery PRIVATE rpcpp::rpcpp)
 
+add_executable(example_async_calc async_calc.cpp)
+target_link_libraries(example_async_calc PRIVATE rpcpp::rpcpp)
+
 if(RPCPP_BUILD_MSGPACK)
     add_executable(example_calculator_msgpack calculator_msgpack.cpp)
     target_link_libraries(example_calculator_msgpack PRIVATE rpcpp::rpcpp)
