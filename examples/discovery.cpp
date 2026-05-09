@@ -8,11 +8,17 @@
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
 
+struct Vec2 {
+    double x;
+    double y;
+};
+
 class Calculator {
 public:
-    int add(int a, int b)      { return a + b; }
-    int subtract(int a, int b) { return a - b; }
-    int multiply(int a, int b) { return a * b; }
+    int  add(int a, int b)            { return a + b; }
+    int  subtract(int a, int b)       { return a - b; }
+    int  multiply(int a, int b)       { return a * b; }
+    Vec2 translate(Vec2 p, Vec2 delta) { return { p.x + delta.x, p.y + delta.y }; }
 };
 
 int main() {
@@ -22,6 +28,7 @@ int main() {
     server.addMethod<&Calculator::add>();
     server.addMethod<&Calculator::subtract>();
     server.addMethod<&Calculator::multiply>();
+    server.addMethod<&Calculator::translate>();
     server.addDiscoveryMethod();
 
     std::cerr << "OpenRPC schema:\n" << server.dumpSchema() << '\n';

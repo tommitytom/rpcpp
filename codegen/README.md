@@ -11,27 +11,37 @@ npm install
 
 ## Where the schema comes from
 
-Any `TypedRpcServer` instance can dump its OpenRPC document via `server.dumpSchema()` (a JSON string) or expose it over the wire via `addDiscoveryMethod()` (the `rpc.discover` method). For a one-shot grab from the C++ side:
-
-```
-echo '{"jsonrpc":"2.0","id":"1","method":"rpc.discover"}' \
-  | ./build/examples/example_discovery 2>/dev/null \
-  | jq .result > openrpc.json
-```
-
-The `jq .result` step strips the JSON-RPC envelope so you're left with the bare OpenRPC document — that's what this tool consumes.
+Any `TypedRpcServer` instance can dump its OpenRPC document via `server.dumpSchema()` (a JSON string) or expose it over the wire via `addDiscoveryMethod()` (the `rpc.discover` method).
 
 ## CLI
+
+The most direct path is to point the tool at your server binary; it spawns it, sends `rpc.discover`, parses the response, and writes the output:
+
+```
+npm run codegen -- --exec=./build/examples/example_discovery --type=ts --name=Calculator --out=client.ts
+```
+
+The server must register `rpc.discover` (`server.addDiscoveryMethod()`) and exit cleanly on stdin EOF — both of which `RpcServer::run()` already does.
+
+If you've already captured the OpenRPC document to a file (e.g., from a long-running server), pass it as a positional argument instead:
 
 ```
 npm run codegen -- openrpc.json --type=ts  --name=Calculator --out=client.ts
 npm run codegen -- openrpc.json --type=zod --name=Calculator --out=client-zod.ts
 ```
 
-Pipe through stdin instead of passing a path:
+Or pipe through stdin:
 
 ```
 cat openrpc.json | npm run codegen -- --type=ts --name=Calculator --out=client.ts
+```
+
+To hand-roll a discovery call without `--exec` (for example when the server is already running elsewhere), strip the JSON-RPC envelope with `jq`:
+
+```
+echo '{"jsonrpc":"2.0","id":"1","method":"rpc.discover"}' \
+  | ./your-server 2>/dev/null \
+  | jq .result > openrpc.json
 ```
 
 `--type=ts` emits `interface ServiceName { ... }` plus typed interfaces for every entry under `components.schemas`. `--type=zod` emits matching `z.object(...)` schemas with `z.infer<>` aliases. Output paths are resolved relative to your current directory.
