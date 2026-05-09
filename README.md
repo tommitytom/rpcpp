@@ -2,7 +2,7 @@
 
 A small JSON-RPC 2.0 server library for C++20. The server reads requests from `stdin`, dispatches them to registered methods, and writes responses to `stdout`. Method parameters and return values are reflected through [reflect-cpp](https://github.com/getml/reflect-cpp), which also drives the OpenRPC 1.3.2 schema that the optional `rpc.discover` method exposes.
 
-The library is codec-agnostic. JSON is the default, but the same `addMethod<&T::method>()` registrations work over any encoding reflect-cpp supports — msgpack, CBOR, and so on — by swapping a template argument.
+The library is codec-agnostic. JSON is the default, but the same `addMethod<&T::method>()` registrations work over any encoding reflect-cpp supports - msgpack, CBOR, and so on - by swapping a template argument.
 
 ## Building
 
@@ -74,13 +74,37 @@ Adding a new codec is roughly a dozen lines: declare the input/output/buffer typ
 
 `RpcServer<Codec>` is the lower-level base class. You register handlers with `addHandler(name, fn)` where `fn` receives the request `id` and `params` as `rfl::Generic` and returns the encoded response bytes. Use this for loose parameter shapes, custom dispatch, or anywhere the typed path is in the way. See `examples/echo.cpp`.
 
+## Async dispatch
+
+For methods whose answers come from a worker thread, an external service, or any path that can't return inline, register them with `addAsyncMethod` and take a `rpcpp::Resolver<R>` as the trailing parameter. The method returns `void` immediately; whoever ends up with the resolver calls `r.resolve(value)` (or `r.reject(code, msg)`) from any thread.
+
+```cpp
+class Service {
+public:
+    void slow_add(int a, int b, rpcpp::Resolver<int> r) {
+        std::thread([a, b, r = std::move(r)]() mutable {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            r.resolve(a + b);
+        }).detach();
+    }
+};
+
+server.addAsyncMethod<&Service::slow_add>();
+```
+
+`Resolver<R>` is copyable (the underlying state is shared) and idempotent - only the first `resolve`/`reject` wins. If every copy is dropped without firing, the library auto-emits `-32603 "Async request was abandoned"` so a client never silently hangs. `RpcServer::run()` waits for in-flight async work to drain before exiting, which keeps test scripts and stdio clients from missing the tail of a response.
+
+For codec-level control there's a raw counterpart: `server.addAsyncHandler(name, fn)` where `fn` receives `(id, params, AsyncContext<C> ctx)` and calls `ctx.respondBytes(...)` / `ctx.respondError(...)` once the work completes. Useful when reflect-cpp parsing is in the way or the response shape is dynamic. See [examples/async_calc.cpp](examples/async_calc.cpp).
+
+The OpenRPC schema for an async method is identical to the sync equivalent - async-ness is a server-side dispatch detail, not part of the contract.
+
 ## Discovery
 
-Calling `server.addDiscoveryMethod()` registers `rpc.discover`, which returns the server's OpenRPC document so clients can introspect available methods, parameters, and return types. `dumpSchema()` returns the same document as a pretty-printed JSON string regardless of the active codec — OpenRPC documents are conventionally JSON, and this gives you a stable schema artifact even when the wire format is binary. See `examples/discovery.cpp`.
+Calling `server.addDiscoveryMethod()` registers `rpc.discover`, which returns the server's OpenRPC document so clients can introspect available methods, parameters, and return types. `dumpSchema()` returns the same document as a pretty-printed JSON string regardless of the active codec - OpenRPC documents are conventionally JSON, and this gives you a stable schema artifact even when the wire format is binary. See `examples/discovery.cpp`.
 
 ## Cross-platform notes
 
-The library and tests are portable across Linux, macOS, and Windows. The typed method-name extraction has a separate code path for MSVC's `__FUNCSIG__`, the framing helpers and run loop go through `std::istream` / `std::ostream`, and tests drive everything in-process via `std::stringstream` (no `fork`/`exec`).
+The library and tests are portable across Linux, macOS, and Windows. The typed method-name extraction has a separate code path for MSVC's `__FUNCSIG__`, the framing helpers and run loop go through `std::istream` / `std::ostream`, and tests drive everything in-process via `std::stringstream`.
 
 On Windows, binary codecs need stdin/stdout in binary mode or CRLF translation will corrupt frames. `RpcServer::run()` calls `rpcpp::set_binary_stdio()` automatically when the codec advertises `is_binary == true`. If you drive `processMessage` against `std::cin`/`std::cout` yourself, call `rpcpp::set_binary_stdio()` once at startup (defined in `Stdio.h`; a no-op on POSIX).
 

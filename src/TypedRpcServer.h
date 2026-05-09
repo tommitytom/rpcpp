@@ -110,6 +110,69 @@ decltype(auto) invokeMethod(T& obj, ParamTuple& args, std::index_sequence<Is...>
     return (obj.*Func)(forwardArg<std::tuple_element_t<Is, OrigArgsTuple>>(std::get<Is>(args))...);
 }
 
+// ── Async helpers ───────────────────────────────────────────────────────────
+
+template <class X> struct IsResolver : std::false_type {};
+template <class R> struct IsResolver<Resolver<R>> : std::true_type {};
+
+template <class X> struct ResolverInner;
+template <class R> struct ResolverInner<Resolver<R>> { using type = R; };
+
+template <class Tup> struct DecayTuple;
+template <class... Ts>
+struct DecayTuple<std::tuple<Ts...>> {
+    using type = std::tuple<std::decay_t<Ts>...>;
+};
+
+template <class... Args>
+struct PeelLast {
+private:
+    template <std::size_t... Is>
+    static auto rest_helper(std::index_sequence<Is...>)
+        -> std::tuple<std::tuple_element_t<Is, std::tuple<Args...>>...>;
+
+public:
+    static constexpr std::size_t N = sizeof...(Args);
+    static_assert(N >= 1, "Async method must have at least one parameter (Resolver<R>)");
+    using rest = decltype(rest_helper(std::make_index_sequence<N - 1>{}));
+    using last = std::tuple_element_t<N - 1, std::tuple<Args...>>;
+};
+
+template <class Class, class... Args>
+constexpr auto asyncFnMeta(void(Class::*)(Args...)) {
+    using P    = PeelLast<Args...>;
+    using Last = std::remove_cvref_t<typename P::last>;
+    static_assert(IsResolver<Last>::value,
+                  "addAsyncMethod requires the method's last parameter to be rpcpp::Resolver<R>");
+    using R   = typename ResolverInner<Last>::type;
+    using PT  = typename DecayTuple<typename P::rest>::type;
+    using OAT = typename P::rest;
+    return std::tuple<PT, OAT, R>{};
+}
+
+template <class Class, class... Args>
+constexpr auto asyncFnMeta(void(Class::*)(Args...) const) {
+    using P    = PeelLast<Args...>;
+    using Last = std::remove_cvref_t<typename P::last>;
+    static_assert(IsResolver<Last>::value,
+                  "addAsyncMethod requires the method's last parameter to be rpcpp::Resolver<R>");
+    using R   = typename ResolverInner<Last>::type;
+    using PT  = typename DecayTuple<typename P::rest>::type;
+    using OAT = typename P::rest;
+    return std::tuple<PT, OAT, R>{};
+}
+
+template <auto Func>
+using AsyncFnMetaT = decltype(asyncFnMeta(Func));
+
+template <auto Func, typename T, typename ParamTuple, typename OrigArgsTuple,
+          typename ResolverT, std::size_t... Is>
+void invokeAsync(T& obj, ParamTuple& args, ResolverT&& resolver,
+                 std::index_sequence<Is...>) {
+    (obj.*Func)(forwardArg<std::tuple_element_t<Is, OrigArgsTuple>>(std::get<Is>(args))...,
+                std::forward<ResolverT>(resolver));
+}
+
 inline void replaceAll(std::string& str, const std::string& from, const std::string& to) {
     size_t pos = 0;
     while ((pos = str.find(from, pos)) != std::string::npos) {
@@ -317,6 +380,61 @@ public:
         constexpr auto name = detail::methodName<MemFn>();
         static_assert(!name.empty(), "Failed to parse method name from function signature");
         return addMethod<MemFn>(std::string(name));
+    }
+
+    template <auto Func>
+    TypedRpcServer& addAsyncMethod(const std::string& name) {
+        using Meta       = detail::AsyncFnMetaT<Func>;
+        using ParamTuple = std::tuple_element_t<0, Meta>;
+        using OrigArgs   = std::tuple_element_t<1, Meta>;
+        using ResultT    = std::tuple_element_t<2, Meta>;
+        constexpr auto N = std::tuple_size_v<ParamTuple>;
+
+        std::apply([this, &name](auto&&... args) {
+            ((addParam<std::remove_cvref_t<decltype(args)>>(name)), ...);
+        }, ParamTuple{});
+
+        addReturn<std::remove_cvref_t<ResultT>>(name);
+
+        this->addAsyncHandler(name,
+            [this](rfl::Generic id, rfl::Generic params, AsyncContext<C> ctx) {
+                auto args_r = rfl::from_generic<ParamTuple>(params);
+                if (!args_r) {
+                    ctx.respondError(-32602, std::string{args_r.error().what()});
+                    return;
+                }
+                auto args = std::move(args_r).value();
+
+                auto state = std::make_shared<typename Resolver<ResultT>::State>();
+                state->onResolve = [ctx, id](ResultT v) mutable {
+                    ctx.respondBytes(C::write(RpcResponse<ResultT>{
+                        .id     = std::move(id),
+                        .result = std::move(v),
+                    }));
+                };
+                state->onReject = [ctx](int code, std::string msg) mutable {
+                    ctx.respondError(code, std::move(msg));
+                };
+                Resolver<ResultT> resolver{state};
+
+                try {
+                    detail::invokeAsync<Func, T, ParamTuple, OrigArgs>(
+                        _object, args, std::move(resolver),
+                        std::make_index_sequence<N>{});
+                } catch (const std::exception& e) {
+                    if (!state->done.exchange(true) && state->onReject) {
+                        state->onReject(-32603, e.what());
+                    }
+                }
+            });
+        return *this;
+    }
+
+    template <auto MemFn>
+    TypedRpcServer& addAsyncMethod() {
+        constexpr auto name = detail::methodName<MemFn>();
+        static_assert(!name.empty(), "Failed to parse method name from function signature");
+        return addAsyncMethod<MemFn>(std::string(name));
     }
 
 private:

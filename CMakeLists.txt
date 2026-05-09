@@ -40,6 +40,7 @@ target_sources(rpcpp
         FILES
             src/Codec.h
             src/Framer.h
+            src/Resolver.h
             src/RpcEnvelope.h
             src/RpcServer.h
             src/Stdio.h
