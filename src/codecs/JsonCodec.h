@@ -16,6 +16,7 @@ struct JsonCodec {
     using buffer_t = std::string;
     using default_in_framer  = LineFramer;
     using default_out_framer = LineFramer;
+    static constexpr bool is_binary = false;
 
     template <class T>
     static auto read(input_t bytes) {

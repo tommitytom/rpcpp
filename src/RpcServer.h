@@ -15,6 +15,7 @@
 #include "Codec.h"
 #include "Framer.h"
 #include "RpcEnvelope.h"
+#include "Stdio.h"
 
 namespace rpcpp {
 
@@ -88,6 +89,10 @@ public:
     }
 
     void run(std::istream& in = std::cin, std::ostream& out = std::cout) {
+        if constexpr (requires { C::is_binary; }) {
+            if constexpr (C::is_binary) set_binary_stdio();
+        }
+
         std::jthread responder([this, &out]() {
             std::optional<typename C::output_t> item;
             while (true) {

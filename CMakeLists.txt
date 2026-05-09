@@ -11,7 +11,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RPCPP_BUILD_EXAMPLES "Build rpcpp examples" ${PROJECT_IS_TOP_LEVEL})
+option(RPCPP_BUILD_TESTS    "Build rpcpp tests"    ${PROJECT_IS_TOP_LEVEL})
 option(RPCPP_BUILD_MSGPACK  "Enable the msgpack codec (requires msgpack-c)" OFF)
+
+if(RPCPP_BUILD_TESTS)
+    enable_testing()
+endif()
 
 if(RPCPP_BUILD_MSGPACK)
     set(REFLECTCPP_MSGPACK ON CACHE BOOL "" FORCE)
@@ -35,6 +40,7 @@ target_sources(rpcpp
             src/Framer.h
             src/RpcEnvelope.h
             src/RpcServer.h
+            src/Stdio.h
             src/TypedRpcServer.h
             src/codecs/JsonCodec.h
             src/codecs/MsgpackCodec.h
@@ -58,6 +64,6 @@ if(RPCPP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-if(RPCPP_BUILD_MSGPACK AND PROJECT_IS_TOP_LEVEL)
+if(RPCPP_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

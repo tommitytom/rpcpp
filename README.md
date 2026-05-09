@@ -78,6 +78,12 @@ Adding a new codec is roughly a dozen lines: declare the input/output/buffer typ
 
 Calling `server.addDiscoveryMethod()` registers `rpc.discover`, which returns the server's OpenRPC document so clients can introspect available methods, parameters, and return types. `dumpSchema()` returns the same document as a pretty-printed JSON string regardless of the active codec — OpenRPC documents are conventionally JSON, and this gives you a stable schema artifact even when the wire format is binary. See `examples/discovery.cpp`.
 
+## Cross-platform notes
+
+The library and tests are portable across Linux, macOS, and Windows. The typed method-name extraction has a separate code path for MSVC's `__FUNCSIG__`, the framing helpers and run loop go through `std::istream` / `std::ostream`, and tests drive everything in-process via `std::stringstream` (no `fork`/`exec`).
+
+On Windows, binary codecs need stdin/stdout in binary mode or CRLF translation will corrupt frames. `RpcServer::run()` calls `rpcpp::set_binary_stdio()` automatically when the codec advertises `is_binary == true`. If you drive `processMessage` against `std::cin`/`std::cout` yourself, call `rpcpp::set_binary_stdio()` once at startup (defined in `Stdio.h`; a no-op on POSIX).
+
 ## Requirements
 
-C++20 compiler, CMake 3.23 or newer. Tested with GCC and Clang; the typed method-name extraction also has an MSVC code path. The msgpack codec additionally requires `msgpack-c`.
+C++20 compiler, CMake 3.23 or newer. The msgpack codec additionally requires `msgpack-c` (Debian/Ubuntu: `libmsgpack-c-dev`). Set `-DRPCPP_BUILD_TESTS=OFF` to skip the test targets when consuming via `add_subdirectory`.

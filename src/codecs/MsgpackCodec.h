@@ -16,6 +16,7 @@ struct MsgpackCodec {
     using buffer_t = std::vector<char>;
     using default_in_framer  = Length32Framer;
     using default_out_framer = Length32Framer;
+    static constexpr bool is_binary = true;
 
     template <class T>
     static auto read(input_t bytes) {
