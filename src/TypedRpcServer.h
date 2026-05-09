@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <exception>
 #include <functional>
 #include <map>
@@ -201,7 +202,10 @@ template <class T, class C, class InF = typename C::default_in_framer, class Out
     requires Codec<C>
 class TypedRpcServer : public RpcServer<C, InF, OutF> {
 public:
-    explicit TypedRpcServer(T& object) : _object(object) {}
+    template <class Tr>
+        requires Transport<Tr> && std::same_as<typename Tr::output_t, typename C::output_t>
+    TypedRpcServer(T& object, Tr& transport)
+        : RpcServer<C, InF, OutF>(transport), _object(object) {}
 
     std::string dumpSchema() {
         return rfl::json::write(generateSchema(), rfl::json::pretty);

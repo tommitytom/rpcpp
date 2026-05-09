@@ -14,6 +14,8 @@
 #include "RpcEnvelope.h"
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/QueueTransport.h"
+#include "transports/StdioTransport.h"
 
 #ifdef RPCPP_HAS_MSGPACK
 #include "codecs/MsgpackCodec.h"
@@ -48,7 +50,8 @@ TEMPLATE_TEST_CASE("processMessage handles a typed add()", "[codec]", RPCPP_TEST
     using Codec = TestType;
 
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, Codec> server(calc);
+    rpcpp::QueueTransport<Codec> transport;
+    rpcpp::TypedRpcServer<Calculator, Codec> server(calc, transport);
     server.template addMethod<&Calculator::add>();
 
     auto req_bytes  = Codec::write(make_request("add", "x", 2, 3));
@@ -68,7 +71,8 @@ TEMPLATE_TEST_CASE("unknown method returns -32601", "[codec]", RPCPP_TEST_CODECS
     using Codec = TestType;
 
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, Codec> server(calc);
+    rpcpp::QueueTransport<Codec> transport;
+    rpcpp::TypedRpcServer<Calculator, Codec> server(calc, transport);
     server.template addMethod<&Calculator::add>();
 
     auto req_bytes  = Codec::write(make_request("nope", "y", 1, 1));
@@ -88,7 +92,8 @@ TEMPLATE_TEST_CASE("run() dispatches a batch through stringstreams", "[codec][ru
     using InF   = typename Codec::default_in_framer;
 
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, Codec> server(calc);
+    rpcpp::StdioTransport<Codec> transport;
+    rpcpp::TypedRpcServer<Calculator, Codec> server(calc, transport);
     server.template addMethod<&Calculator::add>();
     server.template addMethod<&Calculator::multiply>();
 
@@ -97,7 +102,7 @@ TEMPLATE_TEST_CASE("run() dispatches a batch through stringstreams", "[codec][ru
     InF::write(ss_in, Codec::write(make_request("add",      "1", 2, 3)));
     InF::write(ss_in, Codec::write(make_request("multiply", "2", 4, 5)));
 
-    server.run(ss_in, ss_out);
+    transport.run(server, ss_in, ss_out);
 
     auto frame_a = InF::template read<typename Codec::buffer_t>(ss_out);
     auto frame_b = InF::template read<typename Codec::buffer_t>(ss_out);
@@ -144,14 +149,15 @@ TEMPLATE_TEST_CASE("typed async resolves on a worker thread", "[codec][async]", 
     using InF   = typename Codec::default_in_framer;
 
     AsyncService svc;
-    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc);
+    rpcpp::StdioTransport<Codec> transport;
+    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc, transport);
     server.template addAsyncMethod<&AsyncService::slow_add>();
 
     std::stringstream ss_in;
     std::stringstream ss_out;
     InF::write(ss_in, Codec::write(make_request("slow_add", "1", 2, 3)));
 
-    server.run(ss_in, ss_out);
+    transport.run(server, ss_in, ss_out);
 
     auto frame = InF::template read<typename Codec::buffer_t>(ss_out);
     REQUIRE(frame.has_value());
@@ -166,13 +172,14 @@ TEMPLATE_TEST_CASE("typed async reject surfaces a custom error envelope", "[code
     using InF   = typename Codec::default_in_framer;
 
     AsyncService svc;
-    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc);
+    rpcpp::StdioTransport<Codec> transport;
+    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc, transport);
     server.template addAsyncMethod<&AsyncService::rejecter>();
 
     std::stringstream ss_in;
     std::stringstream ss_out;
     InF::write(ss_in, Codec::write(make_request("rejecter", "1", 1, 1)));
-    server.run(ss_in, ss_out);
+    transport.run(server, ss_in, ss_out);
 
     auto frame = InF::template read<typename Codec::buffer_t>(ss_out);
     REQUIRE(frame.has_value());
@@ -188,13 +195,14 @@ TEMPLATE_TEST_CASE("dropped resolver auto-rejects -32603", "[codec][async]", RPC
     using InF   = typename Codec::default_in_framer;
 
     AsyncService svc;
-    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc);
+    rpcpp::StdioTransport<Codec> transport;
+    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc, transport);
     server.template addAsyncMethod<&AsyncService::abandoner>();
 
     std::stringstream ss_in;
     std::stringstream ss_out;
     InF::write(ss_in, Codec::write(make_request("abandoner", "1", 0, 0)));
-    server.run(ss_in, ss_out);
+    transport.run(server, ss_in, ss_out);
 
     auto frame = InF::template read<typename Codec::buffer_t>(ss_out);
     REQUIRE(frame.has_value());
@@ -208,7 +216,8 @@ TEST_CASE("raw addAsyncHandler reaches the wire", "[codec][async][raw]") {
     using Codec = rpcpp::JsonCodec;
     using InF   = typename Codec::default_in_framer;
 
-    rpcpp::RpcServer<Codec> server;
+    rpcpp::StdioTransport<Codec> transport;
+    rpcpp::RpcServer<Codec> server(transport);
     server.addAsyncHandler("ping",
         [](rfl::Generic id, rfl::Generic /*params*/, rpcpp::AsyncContext<Codec> ctx) {
             std::thread([id = std::move(id), ctx]() mutable {
@@ -229,7 +238,7 @@ TEST_CASE("raw addAsyncHandler reaches the wire", "[codec][async][raw]") {
         .jsonrpc = "2.0",
     };
     InF::write(ss_in, Codec::write(req));
-    server.run(ss_in, ss_out);
+    transport.run(server, ss_in, ss_out);
 
     auto frame = InF::template read<typename Codec::buffer_t>(ss_out);
     REQUIRE(frame.has_value());
@@ -237,4 +246,30 @@ TEST_CASE("raw addAsyncHandler reaches the wire", "[codec][async][raw]") {
         typename Codec::input_t{frame->data(), frame->size()});
     REQUIRE(resp.has_value());
     REQUIRE(resp.value().result == "pong");
+}
+
+TEST_CASE("QueueTransport delivers async responses", "[codec][async][queue]") {
+    using Codec = rpcpp::JsonCodec;
+
+    AsyncService svc;
+    rpcpp::QueueTransport<Codec> transport;
+    rpcpp::TypedRpcServer<AsyncService, Codec> server(svc, transport);
+    server.addAsyncMethod<&AsyncService::slow_add>();
+
+    auto req_bytes = Codec::write(make_request("slow_add", "q1", 7, 11));
+    auto sync = server.processMessage(
+        typename Codec::input_t{req_bytes.data(), req_bytes.size()});
+    REQUIRE_FALSE(sync.has_value());
+
+    server.waitForInflight();
+
+    auto received = transport.tryReceive();
+    REQUIRE(received.has_value());
+
+    auto resp = Codec::template read<rpcpp::RpcResponse<int>>(
+        typename Codec::input_t{received->data(), received->size()});
+    REQUIRE(resp.has_value());
+    REQUIRE(resp.value().result == 18);
+
+    REQUIRE_FALSE(transport.tryReceive().has_value());
 }

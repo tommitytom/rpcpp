@@ -4,6 +4,7 @@
 
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/StdioTransport.h"
 
 class Calculator {
 public:
@@ -14,12 +15,13 @@ public:
 
 int main() {
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc);
+    rpcpp::StdioTransport<rpcpp::JsonCodec> transport;
+    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc, transport);
 
     server.addMethod<&Calculator::add>();
     server.addMethod<&Calculator::subtract>();
     server.addMethod<&Calculator::multiply>();
 
-    server.run();
+    transport.run(server);
     return 0;
 }

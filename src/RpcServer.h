@@ -1,18 +1,15 @@
 #pragma once
 
 #include <atomic>
+#include <concepts>
 #include <condition_variable>
 #include <functional>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <utility>
-
-#include <blockingconcurrentqueue.h>
 
 #include <rfl.hpp>
 #include <rfl/Generic.hpp>
@@ -21,7 +18,7 @@
 #include "Framer.h"
 #include "Resolver.h"
 #include "RpcEnvelope.h"
-#include "Stdio.h"
+#include "Transport.h"
 
 namespace rpcpp {
 
@@ -33,6 +30,19 @@ class RpcServer {
 public:
     using Handler      = std::function<typename C::output_t(rfl::Generic id, rfl::Generic params)>;
     using AsyncHandler = std::function<void(rfl::Generic id, rfl::Generic params, AsyncContext<C> ctx)>;
+
+    // Bind the server to a transport. The transport reference must
+    // outlive the server. The server is non-copyable / non-movable
+    // because the transport binding is held as a closure capturing &.
+    template <class T>
+        requires Transport<T> && std::same_as<typename T::output_t, typename C::output_t>
+    explicit RpcServer(T& transport)
+        : _send([&transport](typename C::output_t bytes) { transport.send(std::move(bytes)); }) {}
+
+    RpcServer(const RpcServer&) = delete;
+    RpcServer& operator=(const RpcServer&) = delete;
+    RpcServer(RpcServer&&) = delete;
+    RpcServer& operator=(RpcServer&&) = delete;
 
     void addHandler(const std::string& name, Handler handler) {
         _handlers[name] = std::move(handler);
@@ -85,54 +95,33 @@ public:
     }
 
     void writeResponse(typename C::output_t bytes) {
-        _pending.enqueue(std::move(bytes));
+        _send(std::move(bytes));
     }
 
     void writeNotification(std::string method, rfl::Generic params = rfl::Generic{}) {
-        _pending.enqueue(C::write(RpcNotification{
+        _send(C::write(RpcNotification{
             .method = std::move(method),
             .params = std::move(params),
         }));
     }
 
     void writeError(rfl::Generic id, int code, std::string message) {
-        _pending.enqueue(C::write(RpcError{
+        _send(C::write(RpcError{
             .id    = std::move(id),
             .error = { code, std::move(message) },
         }));
     }
 
-    void run(std::istream& in = std::cin, std::ostream& out = std::cout) {
-        if constexpr (requires { C::is_binary; }) {
-            if constexpr (C::is_binary) set_binary_stdio();
-        }
+    // Block until every async handler in flight has resolved. Stdio-style
+    // runners call this after their input stream closes so unfinished
+    // resolves don't get stranded behind a shutdown sentinel.
+    void waitForInflight() {
+        std::unique_lock lk(_inflight_mtx);
+        _inflight_cv.wait(lk, [this] { return _inflight.load() == 0; });
+    }
 
-        std::jthread responder([this, &out]() {
-            std::optional<typename C::output_t> item;
-            while (true) {
-                _pending.wait_dequeue(item);
-                if (!item.has_value()) return;
-                OutF::write(out, *item);
-                item.reset();
-            }
-        });
-
-        while (auto frame = InF::template read<typename C::buffer_t>(in)) {
-            typename C::input_t view{frame->data(), frame->size()};
-            if (auto resp = processMessage(view)) {
-                _pending.enqueue(std::move(*resp));
-            }
-        }
-
-        // Wait for any async handlers still in flight before signalling
-        // the responder to exit; otherwise their resolves race with the
-        // exit sentinel and get stranded behind it.
-        {
-            std::unique_lock lk(_inflight_mtx);
-            _inflight_cv.wait(lk, [this] { return _inflight.load() == 0; });
-        }
-
-        _pending.enqueue(std::nullopt);
+    bool hasInflight() const noexcept {
+        return _inflight.load() != 0;
     }
 
 protected:
@@ -141,10 +130,10 @@ protected:
                                                       AsyncHandler& handler) {
         auto state = std::make_shared<typename AsyncContext<C>::State>();
         state->onBytes = [this](typename C::output_t bytes) {
-            _pending.enqueue(std::move(bytes));
+            _send(std::move(bytes));
         };
         state->onError = [this, id_copy = id](int code, std::string msg) mutable {
-            _pending.enqueue(C::write(RpcError{
+            _send(C::write(RpcError{
                 .id    = std::move(id_copy),
                 .error = { code, std::move(msg) },
             }));
@@ -169,9 +158,9 @@ protected:
         return std::nullopt;
     }
 
+    std::function<void(typename C::output_t)>     _send;
     std::unordered_map<std::string, Handler>      _handlers;
     std::unordered_map<std::string, AsyncHandler> _asyncHandlers;
-    moodycamel::BlockingConcurrentQueue<std::optional<typename C::output_t>> _pending;
 
     std::atomic<int>        _inflight{0};
     std::mutex              _inflight_mtx;

@@ -4,9 +4,11 @@
 
 #include "RpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/StdioTransport.h"
 
 int main() {
-    rpcpp::RpcServer<rpcpp::JsonCodec> server;
+    rpcpp::StdioTransport<rpcpp::JsonCodec> transport;
+    rpcpp::RpcServer<rpcpp::JsonCodec> server(transport);
 
     server.addHandler("echo",
         [](rfl::Generic id, rfl::Generic params) -> std::string {
@@ -18,6 +20,6 @@ int main() {
             });
         });
 
-    server.run();
+    transport.run(server);
     return 0;
 }

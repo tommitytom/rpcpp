@@ -8,6 +8,7 @@
 
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/StdioTransport.h"
 
 class Service {
 public:
@@ -21,8 +22,9 @@ public:
 
 int main() {
     Service svc;
-    rpcpp::TypedRpcServer<Service, rpcpp::JsonCodec> server(svc);
+    rpcpp::StdioTransport<rpcpp::JsonCodec> transport;
+    rpcpp::TypedRpcServer<Service, rpcpp::JsonCodec> server(svc, transport);
     server.addAsyncMethod<&Service::slow_add>();
-    server.run();
+    transport.run(server);
     return 0;
 }

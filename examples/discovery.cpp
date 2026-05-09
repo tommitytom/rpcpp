@@ -7,6 +7,7 @@
 
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/StdioTransport.h"
 
 struct Vec2 {
     double x;
@@ -23,7 +24,8 @@ public:
 
 int main() {
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc);
+    rpcpp::StdioTransport<rpcpp::JsonCodec> transport;
+    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc, transport);
 
     server.addMethod<&Calculator::add>();
     server.addMethod<&Calculator::subtract>();
@@ -33,6 +35,6 @@ int main() {
 
     std::cerr << "OpenRPC schema:\n" << server.dumpSchema() << '\n';
 
-    server.run();
+    transport.run(server);
     return 0;
 }

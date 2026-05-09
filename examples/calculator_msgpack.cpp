@@ -6,6 +6,7 @@
 
 #include "TypedRpcServer.h"
 #include "codecs/MsgpackCodec.h"
+#include "transports/StdioTransport.h"
 
 class Calculator {
 public:
@@ -16,12 +17,13 @@ public:
 
 int main() {
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, rpcpp::MsgpackCodec> server(calc);
+    rpcpp::StdioTransport<rpcpp::MsgpackCodec> transport;
+    rpcpp::TypedRpcServer<Calculator, rpcpp::MsgpackCodec> server(calc, transport);
 
     server.addMethod<&Calculator::add>();
     server.addMethod<&Calculator::subtract>();
     server.addMethod<&Calculator::multiply>();
 
-    server.run();
+    transport.run(server);
     return 0;
 }

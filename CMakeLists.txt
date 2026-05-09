@@ -44,9 +44,12 @@ target_sources(rpcpp
             src/RpcEnvelope.h
             src/RpcServer.h
             src/Stdio.h
+            src/Transport.h
             src/TypedRpcServer.h
             src/codecs/JsonCodec.h
             src/codecs/MsgpackCodec.h
+            src/transports/QueueTransport.h
+            src/transports/StdioTransport.h
 )
 
 target_include_directories(rpcpp INTERFACE

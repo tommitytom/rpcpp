@@ -1,8 +1,8 @@
 # rpcpp
 
-A small JSON-RPC 2.0 server library for C++20. The server reads requests from `stdin`, dispatches them to registered methods, and writes responses to `stdout`. Method parameters and return values are reflected through [reflect-cpp](https://github.com/getml/reflect-cpp), which also drives the OpenRPC 1.3.2 schema that the optional `rpc.discover` method exposes.
+A small JSON-RPC 2.0 server library for C++20. The server dispatches requests to registered methods and routes responses through a pluggable transport — stdio out of the box, or any in-memory channel you wire up. Method parameters and return values are reflected through [reflect-cpp](https://github.com/getml/reflect-cpp), which also drives the OpenRPC 1.3.2 schema that the optional `rpc.discover` method exposes.
 
-The library is codec-agnostic. JSON is the default, but the same `addMethod<&T::method>()` registrations work over any encoding reflect-cpp supports - msgpack, CBOR, and so on - by swapping a template argument.
+The library is codec-agnostic. JSON is the default, but the same `addMethod<&T::method>()` registrations work over any encoding reflect-cpp supports - msgpack, CBOR, and so on - by swapping a template argument. Transports are independently swappable via a `Transport` concept; bring your own to embed the server in an existing message loop.
 
 ## Building
 
@@ -27,11 +27,12 @@ add_subdirectory(path/to/rpc++)
 target_link_libraries(myapp PRIVATE rpcpp::rpcpp)
 ```
 
-The typed API is the path of least resistance. Define a class, register member functions by pointer, and run the read/dispatch loop:
+The typed API is the path of least resistance. Define a class, register member functions by pointer, attach a transport, and pump it:
 
 ```cpp
 #include "TypedRpcServer.h"
 #include "codecs/JsonCodec.h"
+#include "transports/StdioTransport.h"
 
 class Calculator {
 public:
@@ -41,10 +42,11 @@ public:
 
 int main() {
     Calculator calc;
-    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc);
+    rpcpp::StdioTransport<rpcpp::JsonCodec> transport;
+    rpcpp::TypedRpcServer<Calculator, rpcpp::JsonCodec> server(calc, transport);
     server.addMethod<&Calculator::add>();
     server.addMethod<&Calculator::subtract>();
-    server.run();
+    transport.run(server);
 }
 ```
 
@@ -58,15 +60,43 @@ The typed server takes positional parameters as a JSON array; the order matches 
 
 ## Codecs
 
-A codec is a small policy struct that tells the server how to read and write bytes. `JsonCodec` is built in (`src/codecs/JsonCodec.h`); `MsgpackCodec` is opt-in (`src/codecs/MsgpackCodec.h`, requires `RPCPP_BUILD_MSGPACK=ON`). Swapping codecs is a one-line change:
+A codec is a small policy struct that tells the server how to read and write bytes. `JsonCodec` is built in (`src/codecs/JsonCodec.h`); `MsgpackCodec` is opt-in (`src/codecs/MsgpackCodec.h`, requires `RPCPP_BUILD_MSGPACK=ON`). Swapping codecs is a one-line change on both the transport and the server:
 
 ```cpp
-rpcpp::TypedRpcServer<Calculator, rpcpp::MsgpackCodec> server(calc);
+rpcpp::StdioTransport<rpcpp::MsgpackCodec> transport;
+rpcpp::TypedRpcServer<Calculator, rpcpp::MsgpackCodec> server(calc, transport);
 ```
 
-Each codec also picks a default framing strategy. JSON uses newline-delimited frames; msgpack uses a 4-byte big-endian length prefix. Both are exposed as `rpcpp::LineFramer` and `rpcpp::Length32Framer` and can be overridden via the third and fourth template arguments to `RpcServer` / `TypedRpcServer`.
+Each codec picks a default framing strategy. JSON uses newline-delimited frames; msgpack uses a 4-byte big-endian length prefix. Both are exposed as `rpcpp::LineFramer` and `rpcpp::Length32Framer` and can be overridden via the second and third template arguments to `StdioTransport`.
 
 Adding a new codec is roughly a dozen lines: declare the input/output/buffer types and forward `read<T>` and `write` to the matching `rfl::<format>::read`/`write`. See `src/codecs/JsonCodec.h` for the template.
+
+## Transports
+
+A transport is the destination for output bytes the server produces — async responses, notifications, errors, explicit `writeResponse` calls. The synchronous return value of `processMessage()` does not go through the transport; it's handed back to the caller directly.
+
+Two transports ship with the library:
+
+- **`StdioTransport<Codec>`** (`src/transports/StdioTransport.h`) — wires the server to a pair of `std::istream` / `std::ostream` and provides the `run(server, in, out)` read/dispatch loop. This is what most command-line servers want. Defaults to `std::cin` / `std::cout`.
+- **`QueueTransport<Codec>`** (`src/transports/QueueTransport.h`) — backs `send()` with a lock-free MPMC queue. The owner polls `tryReceive()` to drain async responses on its own clock. Use this when embedding the server in another process and driving it from an existing event loop.
+
+You can also write your own. The `Transport` concept (`src/Transport.h`) is just `send(output_t)` plus an `output_t` type alias matching the codec.
+
+In-process embedding looks like this:
+
+```cpp
+rpcpp::QueueTransport<rpcpp::JsonCodec> transport;
+rpcpp::TypedRpcServer<Service, rpcpp::JsonCodec> server(svc, transport);
+server.addMethod<&Service::sync_op>();
+server.addAsyncMethod<&Service::async_op>();
+
+// Sync handlers answer inline through processMessage's return value.
+auto sync = server.processMessage(R"({"jsonrpc":"2.0","id":"1","method":"sync_op"})");
+if (sync) deliver(*sync);
+
+// Async handlers resolve later; drain whenever your loop ticks.
+while (auto resp = transport.tryReceive()) deliver(*resp);
+```
 
 ## Two API levels
 
@@ -92,7 +122,7 @@ public:
 server.addAsyncMethod<&Service::slow_add>();
 ```
 
-`Resolver<R>` is copyable (the underlying state is shared) and idempotent - only the first `resolve`/`reject` wins. If every copy is dropped without firing, the library auto-emits `-32603 "Async request was abandoned"` so a client never silently hangs. `RpcServer::run()` waits for in-flight async work to drain before exiting, which keeps test scripts and stdio clients from missing the tail of a response.
+`Resolver<R>` is copyable (the underlying state is shared) and idempotent - only the first `resolve`/`reject` wins. If every copy is dropped without firing, the library auto-emits `-32603 "Async request was abandoned"` so a client never silently hangs. `StdioTransport::run()` waits on `server.waitForInflight()` before exiting so async resolves don't get stranded behind EOF; `QueueTransport` callers can do the same explicitly when they need to drain.
 
 For codec-level control there's a raw counterpart: `server.addAsyncHandler(name, fn)` where `fn` receives `(id, params, AsyncContext<C> ctx)` and calls `ctx.respondBytes(...)` / `ctx.respondError(...)` once the work completes. Useful when reflect-cpp parsing is in the way or the response shape is dynamic. See [examples/async_calc.cpp](examples/async_calc.cpp).
 
@@ -106,7 +136,7 @@ Calling `server.addDiscoveryMethod()` registers `rpc.discover`, which returns th
 
 The library and tests are portable across Linux, macOS, and Windows. The typed method-name extraction has a separate code path for MSVC's `__FUNCSIG__`, the framing helpers and run loop go through `std::istream` / `std::ostream`, and tests drive everything in-process via `std::stringstream`.
 
-On Windows, binary codecs need stdin/stdout in binary mode or CRLF translation will corrupt frames. `RpcServer::run()` calls `rpcpp::set_binary_stdio()` automatically when the codec advertises `is_binary == true`. If you drive `processMessage` against `std::cin`/`std::cout` yourself, call `rpcpp::set_binary_stdio()` once at startup (defined in `Stdio.h`; a no-op on POSIX).
+On Windows, binary codecs need stdin/stdout in binary mode or CRLF translation will corrupt frames. `StdioTransport::run()` calls `rpcpp::set_binary_stdio()` automatically when the codec advertises `is_binary == true`. If you drive `processMessage` against `std::cin`/`std::cout` yourself, call `rpcpp::set_binary_stdio()` once at startup (defined in `Stdio.h`; a no-op on POSIX).
 
 ## Requirements
 
