@@ -110,14 +110,15 @@ export async function writeService(doc: OpenRpcDocument, type: GenerationType, n
 						.join(', ') + '): ';
 
 				const resultSchema = method.result?.schema;
+				let returnType: string;
 				if (resultSchema?.type) {
-					methodStr += formatType(resultSchema.type as string, false) + ';';
+					returnType = formatType(resultSchema.type as string, false);
 				} else if (resultSchema?.$ref) {
-					const refType = resultSchema.$ref.split('/').pop();
-					methodStr += refType + ';';
+					returnType = resultSchema.$ref.split('/').pop() ?? 'void';
 				} else {
-					methodStr += 'void;';
+					returnType = 'void';
 				}
+				methodStr += `Promise<${returnType}>;`;
 
 				return methodStr;
 			})

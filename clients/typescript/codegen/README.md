@@ -1,12 +1,12 @@
-# rpcpp-codegen
+# @rpcpp/codegen
 
 Generates TypeScript interfaces and [Zod](https://zod.dev) schemas from rpcpp's OpenRPC discovery output. Useful when the C++ server defines the contract and the client code is TypeScript: point this at the schema your server emits and you get a typed client surface plus matching runtime validators.
 
 ## Install
 
 ```
-cd codegen
-npm install
+cd clients/typescript/codegen
+pnpm install
 ```
 
 ## Where the schema comes from
