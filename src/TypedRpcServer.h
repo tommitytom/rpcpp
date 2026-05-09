@@ -155,9 +155,17 @@ public:
                 throw std::runtime_error(result.error().what());
             }
 
-            for (const auto& [defName, defSchema] : result.value()["$defs"].to_object().value()) {
+            // Bind the Result<Object> to a named local so the for-range
+            // doesn't iterate dangling memory from a destroyed temporary.
+            auto defs_r = result.value()["$defs"].to_object();
+            if (!defs_r) {
+                throw std::runtime_error(defs_r.error().what());
+            }
+            for (const auto& [defName, defSchema] : defs_r.value()) {
                 if (defName == "VoidT") continue;
-                schemas[defName] = defSchema.to_object().value();
+                auto inner = defSchema.to_object();
+                if (!inner) throw std::runtime_error(inner.error().what());
+                schemas[defName] = inner.value();
             }
         }
 
