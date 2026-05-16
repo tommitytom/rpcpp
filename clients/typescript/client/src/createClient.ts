@@ -113,8 +113,17 @@ export function createClient<TService extends object>(
 	}
 
 	async function notify(method: string, params: unknown[]): Promise<void> {
+		// Send `id: null` rather than omitting the field. reflect-cpp's
+		// msgpack struct reader (used by rpcpp's C++ servers) treats
+		// `std::optional<rfl::Generic> id` as required at the parse layer
+		// — a missing key produces "Field named 'id' not found." and the
+		// whole envelope is dropped, so notifications never reach their
+		// handlers. A null id is a no-op semantically: the server still
+		// emits a response, but the JS-side onFrame handler discards
+		// envelopes whose id is null/undefined.
 		const request: RpcRequest = {
 			jsonrpc: '2.0',
+			id:      null,
 			method,
 			params,
 		};
