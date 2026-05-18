@@ -1,6 +1,7 @@
 import type { Codec } from './codec.js';
 import {
 	isErrorEnvelope,
+	isNotification,
 	isResponse,
 	type RpcId,
 	type RpcRequest,
@@ -24,6 +25,15 @@ interface Pending {
  */
 export interface ClientControl {
 	$notify(method: string, ...params: unknown[]): Promise<void>;
+	/**
+	 * Subscribe to server-pushed JSON-RPC notifications for `method`. The
+	 * handler is called with the decoded `params` value for each matching
+	 * notification frame the transport delivers. Multiple handlers per
+	 * method are supported; each fires independently. Pair with `$off`
+	 * (or pass the same handler reference back) to unsubscribe.
+	 */
+	$on(method: string, handler: (params: unknown) => void): void;
+	$off(method: string, handler: (params: unknown) => void): void;
 	$close(): Promise<void>;
 }
 
@@ -34,6 +44,7 @@ export function createClient<TService extends object>(
 ): TService & ClientControl {
 	const { transport, codec } = opts;
 	const pending = new Map<string | number, Pending>();
+	const notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
 	let nextId = 1;
 	let closed = false;
 	let closeError: Error | undefined;
@@ -75,7 +86,25 @@ export function createClient<TService extends object>(
 			}
 			return;
 		}
-		// Notifications and unknown shapes are ignored for now.
+
+		if (isNotification(envelope)) {
+			const set = notificationHandlers.get(envelope.method);
+			if (!set) return;
+			// Snapshot before iterating so a handler can $off itself without
+			// invalidating the loop.
+			for (const handler of [...set]) {
+				try {
+					handler(envelope.params);
+				} catch (err) {
+					// Don't let a misbehaving handler block its peers or
+					// stall the transport — log and continue.
+					// eslint-disable-next-line no-console
+					console.error(`rpcpp: notification handler for "${envelope.method}" threw`, err);
+				}
+			}
+			return;
+		}
+		// Unknown envelope shapes are ignored.
 	});
 
 	transport.onClose((reason) => {
@@ -134,8 +163,23 @@ export function createClient<TService extends object>(
 		async $notify(method: string, ...params: unknown[]): Promise<void> {
 			await notify(method, params);
 		},
+		$on(method: string, handler: (params: unknown) => void): void {
+			let set = notificationHandlers.get(method);
+			if (!set) {
+				set = new Set();
+				notificationHandlers.set(method, set);
+			}
+			set.add(handler);
+		},
+		$off(method: string, handler: (params: unknown) => void): void {
+			const set = notificationHandlers.get(method);
+			if (!set) return;
+			set.delete(handler);
+			if (set.size === 0) notificationHandlers.delete(method);
+		},
 		async $close(): Promise<void> {
 			rejectAll(new RpcTransportError('client closed'));
+			notificationHandlers.clear();
 			await transport.close();
 		},
 	};

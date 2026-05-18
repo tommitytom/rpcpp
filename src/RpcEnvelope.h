@@ -39,4 +39,16 @@ struct RpcNotification {
     std::string jsonrpc = "2.0";
 };
 
+// Typed counterpart of RpcNotification — used by RpcServer::writeNotification<T>
+// to push a notification whose params are a reflect-cpp-serializable struct,
+// without round-tripping through rfl::Generic. The Generic path works for
+// plain values, but it silently degrades rfl::Bytestring to a vector-of-ints
+// and explodes wire size; the typed path preserves msgpack BIN end-to-end.
+template <class Params>
+struct RpcTypedNotification {
+    std::string method;
+    Params params;
+    std::string jsonrpc = "2.0";
+};
+
 }  // namespace rpcpp

@@ -105,6 +105,21 @@ public:
         }));
     }
 
+    // Typed overload — preferred for push channels that carry binary or
+    // otherwise non-trivial payloads. Serializes `params` directly instead of
+    // routing it through `rfl::Generic`, which preserves `rfl::Bytestring`
+    // as msgpack BIN (the Generic path would degrade it to an int array).
+    //
+    // Overload resolution: when the caller passes an `rfl::Generic` the
+    // non-template form above is picked; any other type lands here.
+    template <class T>
+    void writeNotification(std::string method, const T& params) {
+        _send(C::write(RpcTypedNotification<T>{
+            .method = std::move(method),
+            .params = params,
+        }));
+    }
+
     void writeError(rfl::Generic id, int code, std::string message) {
         _send(C::write(RpcError{
             .id    = std::move(id),
