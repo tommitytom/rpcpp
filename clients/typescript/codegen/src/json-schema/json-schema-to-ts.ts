@@ -143,15 +143,21 @@ function convertObject(schema: JSONSchema, ctx: ConvertContext): string {
 	const props = schema.properties ?? {};
 	const propEntries = Object.entries(props);
 
-	// Record<string, V> shorthand for additionalProperties-only objects
+	// Index-signature shorthand for additionalProperties-only objects.
+	// We use the inline `{ [key: string]: V }` form rather than
+	// `Record<string, V>` so recursive aliases like
+	//   export type Generic = boolean | string | { [k: string]: Generic } | Generic[];
+	// type-check. `Record<string, T>` would trip TS2456 (circular reference)
+	// because it's a plain type alias, while the inline index signature is a
+	// "real" object type with structural recursion.
 	if (propEntries.length === 0) {
 		if (typeof schema.additionalProperties === "object") {
 			const valueType = convertSchema(schema.additionalProperties, ctx);
-			return `Record<string, ${valueType}>`;
+			return `{ [key: string]: ${valueType} }`;
 		}
 		if (schema.additionalProperties === true || schema.additionalProperties === undefined) {
 			// Bare object with no props and no restriction
-			return "Record<string, unknown>";
+			return "{ [key: string]: unknown }";
 		}
 		// additionalProperties: false, no properties → empty object
 		return "Record<string, never>";
