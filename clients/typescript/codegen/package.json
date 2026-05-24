@@ -10,7 +10,8 @@
   },
   "scripts": {
     "codegen":   "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test":      "vitest run"
   },
   "dependencies": {
     "zod":                "^3.23.0",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "typescript":  "^5.5.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "vitest":      "^2.0.0"
   }
 }

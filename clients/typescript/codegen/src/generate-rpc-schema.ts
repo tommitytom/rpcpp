@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { generate as generateTs } from './json-schema/json-schema-to-ts.ts';
 import { generate as generateZod } from './json-schema/json-schema-to-zod.ts';
-import type { JSONSchema } from './json-schema/utils.ts';
+import { typeName, type JSONSchema } from './json-schema/utils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,8 +101,15 @@ export async function writeService(doc: OpenRpcDocument, type: GenerationType, n
 							}
 
 							if (p.schema?.$ref) {
-								const refType = p.schema.$ref.split('/').pop();
-								return `${p.name}: ${refType}`;
+								// The $defs key is whatever the server emitted
+								// (often a C++ mangled name like
+								// `trader__engine__wire__Foo`); the type emitter
+								// normalises it through typeName() before
+								// declaring `export type Foo = ...`. We must do
+								// the same here or the interface references
+								// unbound symbols.
+								const refKey = p.schema.$ref.split('/').pop();
+								return `${p.name}: ${refKey ? typeName(refKey) : 'any'}`;
 							}
 
 							return `${p.name}: any`;
@@ -114,7 +121,8 @@ export async function writeService(doc: OpenRpcDocument, type: GenerationType, n
 				if (resultSchema?.type) {
 					returnType = formatType(resultSchema.type as string, false);
 				} else if (resultSchema?.$ref) {
-					returnType = resultSchema.$ref.split('/').pop() ?? 'void';
+					const refKey = resultSchema.$ref.split('/').pop();
+					returnType = refKey ? typeName(refKey) : 'void';
 				} else {
 					returnType = 'void';
 				}

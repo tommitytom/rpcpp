@@ -293,7 +293,15 @@ export function generate(rootSchema: JSONSchema): string {
 		const sName = schemaName(key);
 		const tName = typeName(key);
 
-		lines.push(`export const ${sName} = ${code};`);
+		// Self-referential schemas can't infer their own type from a bare
+		// `const sName = z.union([..., z.lazy(() => sName), ...])`, so give
+		// them an explicit `z.ZodTypeAny` annotation. Cheap regex match on
+		// the emitted code; false positives are harmless (the annotation is
+		// always a valid widening).
+		const refsSelf = new RegExp(`\\b${sName}\\b`).test(code);
+		const annotation = refsSelf ? ": z.ZodTypeAny" : "";
+
+		lines.push(`export const ${sName}${annotation} = ${code};`);
 		lines.push(`export type ${tName} = z.infer<typeof ${sName}>;`);
 		lines.push("");
 	}

@@ -213,6 +213,13 @@ public:
 
     rfl::Generic::Object generateSchema() {
         rfl::Generic::Object schemas;
+        auto contains_key = [](const rfl::Generic::Object& o, std::string_view key) {
+            for (const auto& [k, _] : o) {
+                if (k == key) return true;
+            }
+            return false;
+        };
+
         for (const auto& [name, generator] : _schemaGenerators) {
             std::string schemaStr = generator();
             detail::replaceAll(schemaStr, "#/$defs/", "#/components/schemas/");
@@ -224,15 +231,35 @@ public:
 
             // Bind the Result<Object> to a named local so the for-range
             // doesn't iterate dangling memory from a destroyed temporary.
-            auto defs_r = result.value()["$defs"].to_object();
-            if (!defs_r) {
-                throw std::runtime_error(defs_r.error().what());
+            auto root = result.value();
+
+            // 1. Export the inner $defs (the types the wrapper references).
+            if (contains_key(root, "$defs")) {
+                auto defs_r = root["$defs"].to_object();
+                if (!defs_r) {
+                    throw std::runtime_error(defs_r.error().what());
+                }
+                for (const auto& [defName, defSchema] : defs_r.value()) {
+                    if (defName == "VoidT") continue;
+                    auto inner = defSchema.to_object();
+                    if (!inner) throw std::runtime_error(inner.error().what());
+                    schemas[defName] = inner.value();
+                }
             }
-            for (const auto& [defName, defSchema] : defs_r.value()) {
-                if (defName == "VoidT") continue;
-                auto inner = defSchema.to_object();
-                if (!inner) throw std::runtime_error(inner.error().what());
-                schemas[defName] = inner.value();
+
+            // 2. Also export the top-level schema itself under its registered
+            //    name. Wrapper types like std::vector<X> / std::optional<X>
+            //    are referenced from method param/return slots via the
+            //    wrapper's mangled name, but reflect-cpp only emits inner $defs
+            //    — without this the $ref dangles and the TS codegen produces
+            //    an interface that references unbound symbols.
+            if (!contains_key(schemas, name)) {
+                rfl::Generic::Object top;
+                for (const auto& [k, v] : root) {
+                    if (k == "$defs" || k == "$schema") continue;
+                    top[k] = v;
+                }
+                schemas[name] = top;
             }
         }
 
