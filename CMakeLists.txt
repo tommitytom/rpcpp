@@ -43,7 +43,7 @@ target_sources(rpcpp
             src/Resolver.h
             src/RpcEnvelope.h
             src/RpcServer.h
-            src/Stdio.h
+            src/RpcStdio.h
             src/Transport.h
             src/TypedRpcServer.h
             src/codecs/JsonCodec.h
