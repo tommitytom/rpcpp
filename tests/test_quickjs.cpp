@@ -41,6 +41,10 @@ struct Outer {
     std::optional<Inner> inner;
 };
 
+struct Blob {
+    rfl::Bytestring data;
+};
+
 class Svc {
 public:
     int add(int a, int b)                       { return a + b; }
@@ -139,6 +143,39 @@ TEST_CASE("qjs format: vector<struct> and empty vector", "[quickjs][format]") {
     auto be = rpcpp::qjs::read<std::vector<Point>>(e.ctx, ve);
     REQUIRE(be);
     REQUIRE(be.value().empty());
+    JS_FreeValue(e.ctx, ve);
+}
+
+TEST_CASE("qjs format: rfl::Bytestring marshals as a JS Uint8Array", "[quickjs][format][binary]") {
+    Rt e;
+    const std::byte src[] = {std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE},
+                             std::byte{0xEF}, std::byte{0x00}, std::byte{0xFF}};
+    Blob b{rfl::Bytestring(src, src + 6)};
+
+    JSValue v = rpcpp::qjs::write(e.ctx, b);
+
+    // The `data` field must be a real JS Uint8Array (not an array of numbers),
+    // carrying the exact bytes.
+    JSValue field = JS_GetPropertyStr(e.ctx, v, "data");
+    size_t size = 0;
+    uint8_t* raw = JS_GetUint8Array(e.ctx, &size, field);
+    REQUIRE(raw != nullptr);
+    REQUIRE(size == 6);
+    REQUIRE(raw[0] == 0xDE);
+    REQUIRE(raw[5] == 0xFF);
+    JS_FreeValue(e.ctx, field);
+
+    // ...and reads back byte-identical.
+    auto back = rpcpp::qjs::read<Blob>(e.ctx, v);
+    REQUIRE(back);
+    REQUIRE(back.value().data == b.data);
+    JS_FreeValue(e.ctx, v);
+
+    // Empty bytestring round-trips.
+    JSValue ve = rpcpp::qjs::write(e.ctx, Blob{rfl::Bytestring{}});
+    auto be = rpcpp::qjs::read<Blob>(e.ctx, ve);
+    REQUIRE(be);
+    REQUIRE(be.value().data.empty());
     JS_FreeValue(e.ctx, ve);
 }
 

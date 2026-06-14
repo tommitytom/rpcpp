@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -8,6 +9,7 @@
 
 #include <quickjs.h>
 
+#include <rfl/Bytestring.hpp>
 #include <rfl/always_false.hpp>
 
 namespace rpcpp::qjs {
@@ -159,6 +161,11 @@ class Writer {
     using U = std::remove_cvref_t<T>;
     if constexpr (std::is_same_v<U, std::string>) {
       return JS_NewStringLen(ctx_, _var.data(), _var.size());
+    } else if constexpr (std::is_same_v<U, rfl::Bytestring>) {
+      // Binary buffers (rfl::Bytestring) cross the bridge as a JS Uint8Array,
+      // matching the msgpack codec's BIN path — not a JS array of numbers.
+      return JS_NewUint8ArrayCopy(
+          ctx_, reinterpret_cast<const uint8_t*>(_var.data()), _var.size());
     } else if constexpr (std::is_same_v<U, bool>) {
       return JS_NewBool(ctx_, _var);
     } else if constexpr (std::is_floating_point_v<U>) {
