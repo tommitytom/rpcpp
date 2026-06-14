@@ -14,3 +14,8 @@ if(RPCPP_BUILD_MSGPACK)
     add_executable(example_calculator_msgpack calculator_msgpack.cpp)
     target_link_libraries(example_calculator_msgpack PRIVATE rpcpp::rpcpp)
 endif()
+
+if(RPCPP_BUILD_QUICKJS)
+    add_executable(example_calculator_qjs calculator_qjs.cpp)
+    target_link_libraries(example_calculator_qjs PRIVATE rpcpp::rpcpp)
+endif()

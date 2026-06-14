@@ -198,14 +198,14 @@ using SchemaGenerator = std::function<std::string()>;
 
 }  // namespace detail
 
-template <class T, class C, class InF = typename C::default_in_framer, class OutF = typename C::default_out_framer>
+template <class T, class C>
     requires Codec<C>
-class TypedRpcServer : public RpcServer<C, InF, OutF> {
+class TypedRpcServer : public RpcServer<C> {
 public:
     template <class Tr>
         requires Transport<Tr> && std::same_as<typename Tr::output_t, typename C::output_t>
-    TypedRpcServer(T& object, Tr& transport)
-        : RpcServer<C, InF, OutF>(transport), _object(object) {}
+    TypedRpcServer(T& object, Tr& transport, C codec = C{})
+        : RpcServer<C>(transport, std::move(codec)), _object(object) {}
 
     std::string dumpSchema() {
         return rfl::json::write(generateSchema(), rfl::json::pretty);
@@ -358,7 +358,7 @@ public:
     void addDiscoveryMethod() {
         this->addHandler("rpc.discover",
             [this](rfl::Generic id, rfl::Generic /*params*/) -> typename C::output_t {
-                return C::write(RpcResponse<rfl::Generic::Object>{
+                return this->_codec.write(RpcResponse<rfl::Generic::Object>{
                     .id     = std::move(id),
                     .result = generateSchema(),
                 });
@@ -390,14 +390,14 @@ public:
                 if constexpr (std::is_same_v<ReturnT, VoidT>) {
                     detail::invokeMethod<Func, T, ParamTuple, OrigArgs>(
                         _object, args, std::make_index_sequence<N>{});
-                    return C::write(RpcResponse<rfl::Generic>{
+                    return this->_codec.write(RpcResponse<rfl::Generic>{
                         .id     = std::move(id),
                         .result = rfl::Generic{},
                     });
                 } else {
                     auto ret = detail::invokeMethod<Func, T, ParamTuple, OrigArgs>(
                         _object, args, std::make_index_sequence<N>{});
-                    return C::write(RpcResponse<std::remove_cvref_t<ReturnT>>{
+                    return this->_codec.write(RpcResponse<std::remove_cvref_t<ReturnT>>{
                         .id     = std::move(id),
                         .result = std::move(ret),
                     });
@@ -437,8 +437,12 @@ public:
                 auto args = std::move(args_r).value();
 
                 auto state = std::make_shared<typename Resolver<ResultT>::State>();
-                state->onResolve = [ctx, id](ResultT v) mutable {
-                    ctx.respondBytes(C::write(RpcResponse<ResultT>{
+                state->onResolve = [this, ctx, id](ResultT v) mutable {
+                    // For the QuickJS codec, write() defers JSValue construction
+                    // into a thunk materialized on the JS thread at drain time, so
+                    // capturing `this` and calling it here off-thread is safe; byte
+                    // codecs encode eagerly as before.
+                    ctx.respondBytes(this->_codec.write(RpcResponse<ResultT>{
                         .id     = std::move(id),
                         .result = std::move(v),
                     }));
