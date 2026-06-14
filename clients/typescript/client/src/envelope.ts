@@ -34,10 +34,15 @@ export interface RpcNotification {
 export type RpcMessage = RpcResponse | RpcErrorEnvelope | RpcNotification;
 
 export function isResponse(m: unknown): m is RpcResponse {
+	// A success response has an id and is neither an error nor a notification.
+	// `result` may be absent on the wire when a handler returns an empty
+	// optional (codecs that omit empty fields drop it); treat that as a null
+	// result rather than an unroutable frame — otherwise the pending call hangs.
 	return typeof m === 'object' && m !== null
 		&& (m as RpcResponse).jsonrpc === '2.0'
-		&& 'result' in m
-		&& 'id' in m;
+		&& 'id' in m
+		&& !('error' in m)
+		&& !('method' in m);
 }
 
 export function isErrorEnvelope(m: unknown): m is RpcErrorEnvelope {
