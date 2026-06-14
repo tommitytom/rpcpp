@@ -22,9 +22,7 @@
 
 namespace rpcpp {
 
-template <class C,
-          class InF  = typename C::default_in_framer,
-          class OutF = typename C::default_out_framer>
+template <class C>
     requires Codec<C>
 class RpcServer {
 public:
@@ -34,10 +32,15 @@ public:
     // Bind the server to a transport. The transport reference must
     // outlive the server. The server is non-copyable / non-movable
     // because the transport binding is held as a closure capturing &.
+    //
+    // The codec is held by value: stateless byte codecs default-construct,
+    // while a codec carrying host state (e.g. QuickJSCodec wrapping a
+    // JSContext*) is passed in. All read/write goes through this instance.
     template <class T>
         requires Transport<T> && std::same_as<typename T::output_t, typename C::output_t>
-    explicit RpcServer(T& transport)
-        : _send([&transport](typename C::output_t bytes) { transport.send(std::move(bytes)); }) {}
+    explicit RpcServer(T& transport, C codec = C{})
+        : _codec(std::move(codec)),
+          _send([&transport](typename C::output_t bytes) { transport.send(std::move(bytes)); }) {}
 
     RpcServer(const RpcServer&) = delete;
     RpcServer& operator=(const RpcServer&) = delete;
@@ -53,9 +56,9 @@ public:
     }
 
     std::optional<typename C::output_t> processMessage(typename C::input_t bytes) {
-        auto req_r = C::template read<RpcRequest>(bytes);
+        auto req_r = _codec.template read<RpcRequest>(bytes);
         if (!req_r) {
-            return C::write(RpcError{
+            return _codec.write(RpcError{
                 .id    = rfl::Generic{},
                 .error = { -32700, std::string{req_r.error().what()} },
             });
@@ -65,7 +68,7 @@ public:
         rfl::Generic id = req.id.has_value() ? *req.id : rfl::Generic{};
 
         if (req.jsonrpc != "2.0") {
-            return C::write(RpcError{
+            return _codec.write(RpcError{
                 .id    = std::move(id),
                 .error = { -32600, "Invalid JSON-RPC version" },
             });
@@ -77,7 +80,7 @@ public:
             try {
                 return sync_it->second(rfl::Generic{id}, std::move(params));
             } catch (const std::exception& e) {
-                return C::write(RpcError{
+                return _codec.write(RpcError{
                     .id    = std::move(id),
                     .error = { -32603, e.what() },
                 });
@@ -88,7 +91,7 @@ public:
             return dispatchAsync(std::move(id), std::move(params), async_it->second);
         }
 
-        return C::write(RpcError{
+        return _codec.write(RpcError{
             .id    = std::move(id),
             .error = { -32601, "Method not found: " + req.method },
         });
@@ -99,7 +102,7 @@ public:
     }
 
     void writeNotification(std::string method, rfl::Generic params = rfl::Generic{}) {
-        _send(C::write(RpcNotification{
+        _send(_codec.write(RpcNotification{
             .method = std::move(method),
             .params = std::move(params),
         }));
@@ -114,14 +117,14 @@ public:
     // non-template form above is picked; any other type lands here.
     template <class T>
     void writeNotification(std::string method, const T& params) {
-        _send(C::write(RpcTypedNotification<T>{
+        _send(_codec.write(RpcTypedNotification<T>{
             .method = std::move(method),
             .params = params,
         }));
     }
 
     void writeError(rfl::Generic id, int code, std::string message) {
-        _send(C::write(RpcError{
+        _send(_codec.write(RpcError{
             .id    = std::move(id),
             .error = { code, std::move(message) },
         }));
@@ -148,7 +151,7 @@ protected:
             _send(std::move(bytes));
         };
         state->onError = [this, id_copy = id](int code, std::string msg) mutable {
-            _send(C::write(RpcError{
+            _send(_codec.write(RpcError{
                 .id    = std::move(id_copy),
                 .error = { code, std::move(msg) },
             }));
@@ -173,6 +176,7 @@ protected:
         return std::nullopt;
     }
 
+    C                                             _codec;
     std::function<void(typename C::output_t)>     _send;
     std::unordered_map<std::string, Handler>      _handlers;
     std::unordered_map<std::string, AsyncHandler> _asyncHandlers;

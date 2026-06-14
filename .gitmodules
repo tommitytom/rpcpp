@@ -1,6 +1,0 @@
-[submodule "deps/reflect-cpp"]
-	path = deps/reflect-cpp
-	url = https://github.com/getml/reflect-cpp
-[submodule "deps/catch2"]
-	path = deps/catch2
-	url = https://github.com/catchorg/Catch2.git
