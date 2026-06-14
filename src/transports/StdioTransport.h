@@ -30,7 +30,7 @@ namespace rpcpp {
 template <class C,
           class InF  = typename C::default_in_framer,
           class OutF = typename C::default_out_framer>
-    requires Codec<C>
+    requires WireCodec<C>
 class StdioTransport {
 public:
     using output_t = typename C::output_t;
