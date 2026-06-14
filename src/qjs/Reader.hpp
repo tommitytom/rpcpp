@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include <quickjs.h>
 
+#include <rfl/Bytestring.hpp>
 #include <rfl/Result.hpp>
 #include <rfl/always_false.hpp>
 
@@ -141,6 +143,26 @@ class Reader {
       std::string out(s, len);
       JS_FreeCString(ctx_, s);
       return out;
+
+    } else if constexpr (std::is_same_v<U, rfl::Bytestring>) {
+      // Binary buffers arrive as a JS Uint8Array (canonical) or a bare
+      // ArrayBuffer. Mirrors the Writer's JS_NewUint8ArrayCopy path.
+      size_t size = 0;
+      uint8_t* data = nullptr;
+      if (JS_IsArrayBuffer(_var.val_)) {
+        data = JS_GetArrayBuffer(ctx_, &size, _var.val_);
+      } else {
+        data = JS_GetUint8Array(ctx_, &size, _var.val_);
+        if (!data) {
+          // JS_GetUint8Array throws a TypeError on a non-Uint8Array; clear it.
+          JS_FreeValue(ctx_, JS_GetException(ctx_));
+        }
+      }
+      if (!data) {
+        return rfl::error("Could not cast to bytestring (expected Uint8Array).");
+      }
+      const auto* bytes = reinterpret_cast<const std::byte*>(data);
+      return rfl::Bytestring(bytes, bytes + size);
 
     } else if constexpr (std::is_same_v<U, bool>) {
       if (!JS_IsBool(_var.val_)) {
