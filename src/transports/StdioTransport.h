@@ -8,7 +8,7 @@
 #include <blockingconcurrentqueue.h>
 
 #include "../Codec.h"
-#include "../Stdio.h"
+#include "../RpcStdio.h"
 
 namespace rpcpp {
 
