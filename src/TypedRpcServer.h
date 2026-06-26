@@ -26,17 +26,38 @@ struct VoidT {};
 
 namespace detail {
 
+constexpr bool isIdentChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
 template <auto MemFn>
 constexpr std::string_view methodName() {
 #if defined(_MSC_VER) && !defined(__clang__)
+    // MSVC renders the pointer-to-member non-type template argument as the
+    // function's FULL signature (not `&Class::method`), e.g.
+    //   methodName<unsigned int __cdecl Class::method(std::basic_string<...>,...)>(void)
+    // The earlier `rfind("::")` approach mis-fires on the `std::`/`char_traits`
+    // qualifiers inside templated parameter types. Anchor instead on the first
+    // '(' after the marker — the method's parameter list — and walk back over
+    // the identifier that ends there.
     constexpr std::string_view sig = __FUNCSIG__;
     constexpr std::string_view startMarker = "methodName<";
-    constexpr char endChar = '>';
+
+    const auto startPos = sig.find(startMarker);
+    if (startPos == std::string_view::npos) return {};
+    const auto argStart = startPos + startMarker.size();
+
+    const auto parenPos = sig.find('(', argStart);
+    if (parenPos == std::string_view::npos) return {};
+
+    auto nameStart = parenPos;
+    while (nameStart > argStart && isIdentChar(sig[nameStart - 1])) --nameStart;
+    return sig.substr(nameStart, parenPos - nameStart);
 #else
     constexpr std::string_view sig = __PRETTY_FUNCTION__;
     constexpr std::string_view startMarker = "MemFn = ";
     constexpr char endChar = ';';
-#endif
 
     const auto startPos = sig.find(startMarker);
     if (startPos == std::string_view::npos) return {};
@@ -55,17 +76,9 @@ constexpr std::string_view methodName() {
     const auto nameStart = (lastColons == std::string_view::npos) ? 0 : lastColons + 2;
 
     auto nameEnd = nameStart;
-    while (nameEnd < arg.size()) {
-        const char c = arg[nameEnd];
-        const bool isIdent =
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            c == '_';
-        if (!isIdent) break;
-        ++nameEnd;
-    }
+    while (nameEnd < arg.size() && isIdentChar(arg[nameEnd])) ++nameEnd;
     return arg.substr(nameStart, nameEnd - nameStart);
+#endif
 }
 
 template <typename, bool, bool>
