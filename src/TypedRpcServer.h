@@ -370,7 +370,7 @@ public:
 
     void addDiscoveryMethod() {
         this->addHandler("rpc.discover",
-            [this](rfl::Generic id, rfl::Generic /*params*/) -> typename C::output_t {
+            [this](rfl::Generic id, auto&& /*params*/) -> typename C::output_t {
                 return this->_codec.write(RpcResponse<rfl::Generic::Object>{
                     .id     = std::move(id),
                     .result = generateSchema(),
@@ -393,10 +393,10 @@ public:
         addReturn<std::remove_cvref_t<ReturnT>>(name);
 
         this->addHandler(name,
-            [this](rfl::Generic id, rfl::Generic params) -> typename C::output_t {
-                auto args_r = rfl::from_generic<ParamTuple>(params);
+            [this](rfl::Generic id, auto&& params) -> typename C::output_t {
+                auto args_r = this->template decodeParams<ParamTuple>(std::forward<decltype(params)>(params));
                 if (!args_r) {
-                    throw std::runtime_error(args_r.error().what());
+                    throw std::runtime_error(std::string{args_r.error().what()});
                 }
                 auto args = std::move(args_r).value();
 
@@ -441,8 +441,11 @@ public:
         addReturn<std::remove_cvref_t<ResultT>>(name);
 
         this->addAsyncHandler(name,
-            [this](rfl::Generic id, rfl::Generic params, AsyncContext<C> ctx) {
-                auto args_r = rfl::from_generic<ParamTuple>(params);
+            [this](rfl::Generic id, auto&& params, AsyncContext<C> ctx) {
+                // Decode SYNCHRONOUSLY here (before invokeAsync spawns deferred work): a NativeAstCodec's
+                // `params` is a borrowed request AST valid only for this call — the decoded tuple (owned,
+                // incl. any Bytestring copy) is what the resolver continuations capture, never the AST.
+                auto args_r = this->template decodeParams<ParamTuple>(std::forward<decltype(params)>(params));
                 if (!args_r) {
                     ctx.respondError(-32602, std::string{args_r.error().what()});
                     return;
@@ -486,6 +489,25 @@ public:
     }
 
 private:
+    // Decode a method's param tuple. For a NativeAstCodec, `params` is the raw request AST: re-read
+    // it typed as RpcTypedRequest<ParamTuple> so a binary param arrives as rfl::Bytestring (a
+    // Uint8Array), never degraded through rfl::Generic. For other codecs, `params` is the decoded
+    // rfl::Generic — the original from_generic path. Returns an error Result on decode failure; the
+    // caller maps it to the right JSON-RPC error (sync throws → -32603, async → -32602).
+    template <class ParamTuple, class P>
+    rfl::Result<ParamTuple> decodeParams(P&& params) {
+        if constexpr (NativeAstCodec<C>) {
+            auto req_r = this->_codec.template read<RpcTypedRequest<ParamTuple>>(params);
+            if (!req_r) return rfl::error(std::string{req_r.error().what()});
+            auto& req = req_r.value();
+            if (req.params.has_value()) return std::move(*req.params);
+            if constexpr (std::tuple_size_v<ParamTuple> != 0) return rfl::error("Missing params");
+            return ParamTuple{};  // a no-arg method: absent params is fine
+        } else {
+            return rfl::from_generic<ParamTuple>(std::forward<P>(params));
+        }
+    }
+
     T& _object;
     std::unordered_map<std::string, detail::SchemaGenerator> _schemaGenerators;
     std::map<std::string, detail::MethodDesc> _methodSchemas;

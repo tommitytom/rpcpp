@@ -15,6 +15,27 @@ struct RpcRequest {
     std::string jsonrpc = "2.0";
 };
 
+// Params-less routing view of a request. A NativeAstCodec decodes THIS to route on method/id
+// without materializing params through rfl::Generic — the extra `params` field is ignored by the
+// reader (a bare handle fetch, never a byte-walk), so a Uint8Array param survives untouched to be
+// decoded typed by the handler.
+struct RpcRequestHead {
+    std::string method;
+    std::optional<rfl::Generic> id;
+    std::string jsonrpc = "2.0";
+};
+
+// Typed counterpart of RpcRequest — the inbound twin of RpcTypedNotification. A NativeAstCodec
+// re-reads the raw request into this with `Params` == the method's decayed param tuple, so a
+// binary param decodes as rfl::Bytestring (a Uint8Array) instead of degrading through rfl::Generic.
+template <class Params>
+struct RpcTypedRequest {
+    std::string method;
+    std::optional<rfl::Generic> id;
+    std::optional<Params> params;
+    std::string jsonrpc = "2.0";
+};
+
 template <class Result>
 struct RpcResponse {
     rfl::Generic id;

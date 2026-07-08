@@ -33,6 +33,10 @@ class QuickJSCodec {
 public:
     using input_t  = JSValue;
     using output_t = QuickJSOut;
+    // Opt into NativeAstCodec: input_t is a live, re-readable AST node, so the server can decode
+    // method params straight into their typed tuple (preserving rfl::Bytestring as a Uint8Array)
+    // instead of through the lossy rfl::Generic intermediate.
+    using ast_view_t = JSValue;
 
     explicit QuickJSCodec(JSContext* ctx) : _ctx(ctx) {}
 

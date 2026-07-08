@@ -71,6 +71,12 @@ public:
     void throw_async(int, rpcpp::Resolver<int>) { throw std::runtime_error("async boom"); }
     // Sync: throws → -32603.
     void throw_now() { throw std::runtime_error("boom"); }
+
+    // Binary params: capture a Bytestring arg, and echo one straight back. These only work if the
+    // server decodes params typed (Uint8Array → rfl::Bytestring) rather than through rfl::Generic.
+    rfl::Bytestring lastBytes;
+    void takeBytes(rfl::Bytestring b)          { lastBytes = std::move(b); }
+    rfl::Bytestring echoBytes(rfl::Bytestring b) { return b; }
 };
 
 // Build a request as a live JSValue by marshalling an RpcRequest (the codec's
@@ -335,6 +341,50 @@ TEST_CASE("qjs server: sync add returns 5", "[quickjs][server]") {
     REQUIRE(resp);
     REQUIRE(resp.value().result == 5);
     REQUIRE(resp.value().jsonrpc == "2.0");
+}
+
+TEST_CASE("qjs server: a Bytestring param arrives as a Uint8Array (not degraded through Generic)",
+          "[quickjs][server][binary]") {
+    Rt e;
+    Svc svc;
+    rpcpp::QuickJSTransport transport(e.ctx, [](JSContext*, JSValue) {});
+    rpcpp::TypedRpcServer<Svc, rpcpp::QuickJSCodec> server(svc, transport, rpcpp::QuickJSCodec{e.ctx});
+    server.addMethod<&Svc::takeBytes>();
+    server.addMethod<&Svc::echoBytes>();
+
+    const uint8_t src[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF};
+    const rfl::Bytestring want(reinterpret_cast<const std::byte*>(src),
+                               reinterpret_cast<const std::byte*>(src) + 6);
+
+    // Hand-build the request so params[0] is a REAL Uint8Array. The generic write_request/int_args
+    // helpers route params through rfl::Generic, which cannot carry bytes — that Generic bottleneck
+    // on the param path is exactly what this change removes.
+    auto make_req = [&](const char* method) {
+        JSValue req = JS_NewObject(e.ctx);
+        JS_SetPropertyStr(e.ctx, req, "jsonrpc", JS_NewString(e.ctx, "2.0"));
+        JS_SetPropertyStr(e.ctx, req, "id", JS_NewInt32(e.ctx, 1));
+        JS_SetPropertyStr(e.ctx, req, "method", JS_NewString(e.ctx, method));
+        JSValue params = JS_NewArray(e.ctx);
+        JS_SetPropertyUint32(e.ctx, params, 0, JS_NewUint8ArrayCopy(e.ctx, src, 6));  // transfers ref
+        JS_SetPropertyStr(e.ctx, req, "params", params);                             // transfers ref
+        return req;
+    };
+
+    SECTION("param is captured byte-identical") {
+        JSValue req = make_req("takeBytes");
+        auto out = server.processMessage(req);
+        JS_FreeValue(e.ctx, req);
+        REQUIRE(out.has_value());
+        REQUIRE(svc.lastBytes == want);
+    }
+
+    SECTION("param round-trips back out as a Uint8Array result") {
+        JSValue req = make_req("echoBytes");
+        auto resp = call_sync<rpcpp::RpcResponse<rfl::Bytestring>>(e.ctx, server, req);
+        JS_FreeValue(e.ctx, req);
+        REQUIRE(resp);
+        REQUIRE(resp.value().result == want);
+    }
 }
 
 TEST_CASE("qjs server: multi-arg, void, string, and struct methods", "[quickjs][server]") {
