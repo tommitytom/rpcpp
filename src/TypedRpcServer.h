@@ -110,6 +110,16 @@ constexpr void toFunctionMeta(...);
 template <typename Type, typename Candidate>
 using FunctionMetaT = decltype(toFunctionMeta<Type>(std::declval<Candidate>()));
 
+// The class a pointer-to-member-function belongs to (plain + const forms — the two
+// member shapes toFunctionMeta handles). Used to constrain the cross-object addMethod
+// overloads: a member pointer may only be registered against an instance of its own
+// class, which also keeps that overload out of the resolution set for the existing
+// name-explicit addMethod<Func>(std::string) calls (see the note there).
+template <class M> struct MemberClass;
+template <class R, class Cl, class... A> struct MemberClass<R (Cl::*)(A...)>       { using type = Cl; };
+template <class R, class Cl, class... A> struct MemberClass<R (Cl::*)(A...) const> { using type = Cl; };
+template <auto MemFn> using MemberClassT = typename MemberClass<decltype(MemFn)>::type;
+
 template <typename OrigArg, typename StoredArg>
 decltype(auto) forwardArg(StoredArg& arg) {
     if constexpr (std::is_lvalue_reference_v<OrigArg>) {
@@ -378,9 +388,18 @@ public:
             });
     }
 
-    template <auto Func>
-    TypedRpcServer& addMethod(const std::string& name) {
-        using Meta       = detail::FunctionMetaT<T, decltype(Func)>;
+    // Cross-object registration: bind MemFn — a member of BindClass, which need NOT be
+    // the server's primary T — against `instance`. This is what lets ONE server compose
+    // methods from several backing sub-services (no forwarding facade). `instance` must
+    // outlive the server, the same contract as the primary _object (it is captured by
+    // pointer). The `requires` clause is load-bearing: it keeps this overload out of the
+    // set for the existing `addMethod<Func>(std::string)` calls (where the argument is a
+    // std::string, not MemFn's own class), so those are never hijacked.
+    template <auto MemFn, class BindClass>
+        requires std::same_as<std::remove_cvref_t<BindClass>, detail::MemberClassT<MemFn>>
+    TypedRpcServer& addMethod(BindClass& instance, const std::string& name) {
+        using Obj        = std::remove_cvref_t<BindClass>;
+        using Meta       = detail::FunctionMetaT<Obj, decltype(MemFn)>;
         using ParamTuple = typename Meta::ParamTuple;
         using ReturnT    = typename Meta::ReturnType;
         using OrigArgs   = typename Meta::OriginalArgsTuple;
@@ -393,7 +412,7 @@ public:
         addReturn<std::remove_cvref_t<ReturnT>>(name);
 
         this->addHandler(name,
-            [this](rfl::Generic id, auto&& params) -> typename C::output_t {
+            [this, inst = &instance](rfl::Generic id, auto&& params) -> typename C::output_t {
                 auto args_r = this->template decodeParams<ParamTuple>(std::forward<decltype(params)>(params));
                 if (!args_r) {
                     throw std::runtime_error(std::string{args_r.error().what()});
@@ -401,15 +420,15 @@ public:
                 auto args = std::move(args_r).value();
 
                 if constexpr (std::is_same_v<ReturnT, VoidT>) {
-                    detail::invokeMethod<Func, T, ParamTuple, OrigArgs>(
-                        _object, args, std::make_index_sequence<N>{});
+                    detail::invokeMethod<MemFn, Obj, ParamTuple, OrigArgs>(
+                        *inst, args, std::make_index_sequence<N>{});
                     return this->_codec.write(RpcResponse<rfl::Generic>{
                         .id     = std::move(id),
                         .result = rfl::Generic{},
                     });
                 } else {
-                    auto ret = detail::invokeMethod<Func, T, ParamTuple, OrigArgs>(
-                        _object, args, std::make_index_sequence<N>{});
+                    auto ret = detail::invokeMethod<MemFn, Obj, ParamTuple, OrigArgs>(
+                        *inst, args, std::make_index_sequence<N>{});
                     return this->_codec.write(RpcResponse<std::remove_cvref_t<ReturnT>>{
                         .id     = std::move(id),
                         .result = std::move(ret),
@@ -419,6 +438,22 @@ public:
         return *this;
     }
 
+    template <auto MemFn, class BindClass>
+        requires std::same_as<std::remove_cvref_t<BindClass>, detail::MemberClassT<MemFn>>
+    TypedRpcServer& addMethod(BindClass& instance) {
+        constexpr auto name = detail::methodName<MemFn>();
+        static_assert(!name.empty(), "Failed to parse method name from function signature");
+        return addMethod<MemFn>(instance, std::string(name));
+    }
+
+    // Single-object forms: the primary _object is just the default instance, so both
+    // delegate to the cross-object path above. Signatures are unchanged, so existing
+    // addMethod<&T::m>() / addMethod<&T::m>(name) call sites compile untouched.
+    template <auto Func>
+    TypedRpcServer& addMethod(const std::string& name) {
+        return addMethod<Func>(_object, name);
+    }
+
     template <auto MemFn>
     TypedRpcServer& addMethod() {
         constexpr auto name = detail::methodName<MemFn>();
@@ -426,9 +461,15 @@ public:
         return addMethod<MemFn>(std::string(name));
     }
 
-    template <auto Func>
-    TypedRpcServer& addAsyncMethod(const std::string& name) {
-        using Meta       = detail::AsyncFnMetaT<Func>;
+    // Cross-object async registration — the async counterpart of addMethod(instance).
+    // AsyncFnMetaT<MemFn> already deduces the class from the member pointer (no Type
+    // parameter), so only the invoke target moves from _object to *inst. Same `requires`
+    // constraint + lifetime contract as the sync form.
+    template <auto MemFn, class BindClass>
+        requires std::same_as<std::remove_cvref_t<BindClass>, detail::MemberClassT<MemFn>>
+    TypedRpcServer& addAsyncMethod(BindClass& instance, const std::string& name) {
+        using Obj        = std::remove_cvref_t<BindClass>;
+        using Meta       = detail::AsyncFnMetaT<MemFn>;
         using ParamTuple = std::tuple_element_t<0, Meta>;
         using OrigArgs   = std::tuple_element_t<1, Meta>;
         using ResultT    = std::tuple_element_t<2, Meta>;
@@ -441,7 +482,7 @@ public:
         addReturn<std::remove_cvref_t<ResultT>>(name);
 
         this->addAsyncHandler(name,
-            [this](rfl::Generic id, auto&& params, AsyncContext<C> ctx) {
+            [this, inst = &instance](rfl::Generic id, auto&& params, AsyncContext<C> ctx) {
                 // Decode SYNCHRONOUSLY here (before invokeAsync spawns deferred work): a NativeAstCodec's
                 // `params` is a borrowed request AST valid only for this call — the decoded tuple (owned,
                 // incl. any Bytestring copy) is what the resolver continuations capture, never the AST.
@@ -469,8 +510,8 @@ public:
                 Resolver<ResultT> resolver{state};
 
                 try {
-                    detail::invokeAsync<Func, T, ParamTuple, OrigArgs>(
-                        _object, args, std::move(resolver),
+                    detail::invokeAsync<MemFn, Obj, ParamTuple, OrigArgs>(
+                        *inst, args, std::move(resolver),
                         std::make_index_sequence<N>{});
                 } catch (const std::exception& e) {
                     if (!state->done.exchange(true) && state->onReject) {
@@ -479,6 +520,20 @@ public:
                 }
             });
         return *this;
+    }
+
+    template <auto MemFn, class BindClass>
+        requires std::same_as<std::remove_cvref_t<BindClass>, detail::MemberClassT<MemFn>>
+    TypedRpcServer& addAsyncMethod(BindClass& instance) {
+        constexpr auto name = detail::methodName<MemFn>();
+        static_assert(!name.empty(), "Failed to parse method name from function signature");
+        return addAsyncMethod<MemFn>(instance, std::string(name));
+    }
+
+    // Single-object async forms delegate to the cross-object path with _object.
+    template <auto Func>
+    TypedRpcServer& addAsyncMethod(const std::string& name) {
+        return addAsyncMethod<Func>(_object, name);
     }
 
     template <auto MemFn>
