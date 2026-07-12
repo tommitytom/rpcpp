@@ -221,6 +221,11 @@ using SchemaGenerator = std::function<std::string()>;
 
 }  // namespace detail
 
+// A stateless primary-object sentinel: use TypedRpcServer<Empty, C> for a server whose methods are ALL
+// registered cross-object (addMethod<&Sub::m>(instance)), so the primary _object is never invoked and a
+// real primary object would be a fiction. The Empty-primary constructor below then needs no object arg.
+struct Empty {};
+
 template <class T, class C>
     requires Codec<C>
 class TypedRpcServer : public RpcServer<C> {
@@ -229,6 +234,15 @@ public:
         requires Transport<Tr> && std::same_as<typename Tr::output_t, typename C::output_t>
     TypedRpcServer(T& object, Tr& transport, C codec = C{})
         : RpcServer<C>(transport, std::move(codec)), _object(object) {}
+
+    // No-primary constructor for an empty, default-constructible T (e.g. rpcpp::Empty): the server owns
+    // no single service and composes its whole surface from mounted sub-objects. _object binds to a
+    // shared stateless instance it never calls.
+    template <class Tr>
+        requires Transport<Tr> && std::same_as<typename Tr::output_t, typename C::output_t>
+                 && std::is_empty_v<T> && std::default_initializable<T>
+    explicit TypedRpcServer(Tr& transport, C codec = C{})
+        : RpcServer<C>(transport, std::move(codec)), _object(sharedEmpty()) {}
 
     std::string dumpSchema() {
         return rfl::json::write(generateSchema(), rfl::json::pretty);
@@ -544,6 +558,11 @@ public:
     }
 
 private:
+    // The shared stateless primary for the Empty-primary constructor — a function-local static that
+    // outlives every server, never invoked (all methods are cross-object). Only instantiated when T is
+    // empty + default-constructible, so it costs nothing for the normal single-object servers.
+    static T& sharedEmpty() { static T e{}; return e; }
+
     // Decode a method's param tuple. For a NativeAstCodec, `params` is the raw request AST: re-read
     // it typed as RpcTypedRequest<ParamTuple> so a binary param arrives as rfl::Bytestring (a
     // Uint8Array), never degraded through rfl::Generic. For other codecs, `params` is the decoded
