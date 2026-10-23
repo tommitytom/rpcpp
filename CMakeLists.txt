@@ -21,7 +21,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/get_cpm.cmake)
 CPMAddPackage(
     NAME               reflectcpp
     GITHUB_REPOSITORY  getml/reflect-cpp
-    VERSION            0.24.0
+    VERSION            0.26.2
     OPTIONS
         "REFLECTCPP_MSGPACK ${RPCPP_BUILD_MSGPACK}"
 )
